@@ -1,30 +1,16 @@
-import serverless from 'serverless-http';
-import { connectDB } from '../src/config/database';
-import app from '../src/index';
+// api/index.ts
+import serverless from "serverless-http";
+import app from "../src/index";
+import { connectDB } from "../src/config/database";
 
-// Connect to database on cold start
-let isConnected = false;
+// Vercel invoca `default (req, res)`; conectamos DB por inicio de request.
+// serverless-http convierte Express en handler compatible.
+const expressHandler = serverless(app, {
+  binary: ["image/*", "application/pdf"]
+});
 
-const handler = async (event: any, context: any) => {
-  // Connect to database if not already connected
-  if (!isConnected) {
-    try {
-      await connectDB();
-      isConnected = true;
-      console.log('✅ Database connected for Vercel function');
-    } catch (error) {
-      console.error('❌ Failed to connect to database:', error);
-      throw error;
-    }
-  }
-
-  // Create serverless handler
-  const serverlessHandler = serverless(app, {
-    binary: ['image/*', 'application/pdf']
-  });
-
-  return serverlessHandler(event, context);
-};
-
-export { handler };
-export default handler;
+// Export default: ES LO QUE VERCEL ESPERA
+export default async function handler(req: any, res: any) {
+  await connectDB(); // singleton: no reabre en caliente
+  return expressHandler(req, res);
+}

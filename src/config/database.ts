@@ -1,120 +1,73 @@
-import mongoose from 'mongoose';
+// src/config/database.ts
+import mongoose from "mongoose";
 
-interface DatabaseConfig {
-  uri: string;
-  options: mongoose.ConnectOptions & { w?: string | number };
-}
+type ConnectOptions = mongoose.ConnectOptions & { w?: string | number };
 
-const getDatabaseConfig = (): DatabaseConfig => {
-  const isProduction = process.env.NODE_ENV === 'production';
-  const isTest = process.env.NODE_ENV === 'test';
+function getConfig(): { uri: string; options: ConnectOptions } {
+  const env = process.env.NODE_ENV ?? "development";
 
-  // Read MongoDB URI from environment variables
-  const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL;
-  const dbName = process.env.MONGODB_DB || 'biblioicesi';
+  const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URL || "";
+  const dbName = process.env.MONGODB_DB || "biblioicesi";
 
-  // Configuration for different environments
-  const configs = {
-    development: {
-      uri: mongoUri || `mongodb://localhost:27017/${dbName}`,
-      options: {
-        dbName,
-        maxPoolSize: 5,
-        serverSelectionTimeoutMS: 5000,
-        socketTimeoutMS: 45000,
-      }
-    },
-    test: {
-      uri: process.env.MONGODB_TEST_URI || `mongodb://localhost:27017/${dbName}_test`,
-      options: {
-        dbName: `${dbName}_test`,
-        maxPoolSize: 5,
-        serverSelectionTimeoutMS: 5000,
-        socketTimeoutMS: 45000,
-      }
-    },
-    production: {
-      uri: mongoUri || '',
-      options: {
-        dbName,
-        maxPoolSize: 5,
-        serverSelectionTimeoutMS: 5000,
-        socketTimeoutMS: 45000,
-        retryWrites: true,
-        w: 'majority',
-      } as any // Cast to any to avoid type error for 'w'
-    }
+  const base: ConnectOptions = {
+    dbName,
+    maxPoolSize: 5,
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000
   };
 
-  const environment = isTest ? 'test' : isProduction ? 'production' : 'development';
-  return configs[environment];
-};
-
-// Global promise to prevent multiple connections
-let connectionPromise: Promise<void> | null = null;
-
-export async function connectDB(): Promise<void> {
-  // Return existing connection promise if available
-  if (connectionPromise) {
-    return connectionPromise;
+  if (env === "test") {
+    const testUri = process.env.MONGODB_TEST_URI || `mongodb://127.0.0.1:27017/${dbName}_test`;
+    return { uri: testUri, options: { ...base, dbName: `${dbName}_test` } };
   }
 
-  // Check if already connected
-  if (mongoose.connection.readyState === 1) {
-    console.log('Database already connected');
-    return;
+  if (env === "production") {
+    if (!mongoUri) throw new Error("Missing MONGODB_URI/MONGO_URL in production");
+    return { uri: mongoUri, options: { ...base, retryWrites: true, w: "majority" } };
   }
 
-  connectionPromise = (async () => {
-    try {
-      const config = getDatabaseConfig();
-      
-      if (!config.uri) {
-        throw new Error('Database URI is not defined');
-      }
-
-      await mongoose.connect(config.uri, config.options);
-      
-      const host = mongoose.connection.host;
-      const dbName = mongoose.connection.name;
-      console.log(`Connected to ${host} DB: ${dbName}`);
-
-      // Handle connection events
-      mongoose.connection.on('error', (error) => {
-        console.error('Database connection error:', error);
-      });
-
-      mongoose.connection.on('disconnected', () => {
-        console.log('Database disconnected');
-      });
-
-      // Graceful shutdown
-      process.on('SIGINT', async () => {
-        await mongoose.disconnect();
-        process.exit(0);
-      });
-
-    } catch (error) {
-      console.error('Database connection failed:', error);
-      connectionPromise = null; // Reset on error
-      throw error;
-    }
-  })();
-
-  return connectionPromise;
+  // development
+  return { uri: mongoUri || `mongodb://127.0.0.1:27017/${dbName}`, options: base };
 }
 
-export async function disconnectDB(): Promise<void> {
+// --- Singleton ---
+declare global {
+  // eslint-disable-next-line no-var
+  var __mongooseConnPromise: Promise<typeof mongoose> | undefined;
+}
+
+export async function connectDB(): Promise<typeof mongoose> {
+  if (mongoose.connection.readyState === 1) return mongoose;
+
+  if (!global.__mongooseConnPromise) {
+    const { uri, options } = getConfig();
+    if (!uri) throw new Error("Database URI is not defined");
+    global.__mongooseConnPromise = mongoose.connect(uri, options).then((m) => {
+      console.log(`✅ Connected to ${m.connection.host} DB: ${m.connection.name}`);
+      m.connection.on("error", (err) => console.error("Mongo error:", err));
+      m.connection.on("disconnected", () => console.log("Mongo disconnected"));
+      return m;
+    }).catch((err) => {
+      global.__mongooseConnPromise = undefined;
+      console.error("❌ Mongo connect failed:", err);
+      throw err;
+    });
+  }
+
+  return global.__mongooseConnPromise;
+}
+
+export async function disconnectDB() {
   try {
     await mongoose.disconnect();
-    connectionPromise = null;
-    console.log('Database disconnected successfully');
-  } catch (error) {
-    console.error('Error disconnecting from database:', error);
-    throw error;
+    global.__mongooseConnPromise = undefined;
+    console.log("✅ Mongo disconnected");
+  } catch (e) {
+    console.error("❌ Error on disconnect:", e);
+    throw e;
   }
 }
 
-export function getConnectionStatus(): boolean {
+export function isConnected(): boolean {
   return mongoose.connection.readyState === 1;
 }
